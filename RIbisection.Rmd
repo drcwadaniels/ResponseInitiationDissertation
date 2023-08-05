@@ -1,0 +1,423 @@
+---
+title: "RI Bisection Analysis"
+author: "Carter Daniels"
+date: "2023-07-23"
+output: html_document
+---
+
+```{r}
+rm(list=ls())
+#import libraries
+library(tidyverse)
+library(lme4)
+library(rstan)
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+```
+
+```{r}
+
+#datapath and functions
+
+data.path <- "D:\\Dropbox Drive Folder\\Dropbox\\2 All of Carter's Stuff\\Carter Local\\Dissertation Stuffs\\RI Bisection\\"
+
+```
+
+```{r}
+
+#notes for translating trial-by-trial matrices:
+#cols:
+##1: trial-type; #2: LTI; #3: interval; #4: response; #5 choice latency/or retrieval latency?
+##1: 210: Nose-poke; 310: External
+##2: 210: animal generated; 310: programed at 2.5 s
+##3: interval
+##4: 140: short; 150: long
+##5: animal generated
+
+tbt_matrices <- readxl::read_excel(paste0(data.path,"Summary.xlsx"),
+                                   sheet="TbT Arrays")
+sub_names <- rep(c("InitiationType","LTI","Interval","Choice","ChoiceLat"),8)
+all_names <- c("Session","Trial",sub_names)
+colnames(tbt_matrices)<-all_names
+tbt_matrices_reform <- NULL
+end = 2
+for (ea_subj in 1:8)
+{
+  start = end+1
+  end = end+5
+  tbt_matrices_reform <- rbind(tbt_matrices_reform,
+                               tbt_matrices[,c(1,2,start:end)])
+
+}
+tbt_matrices_reform$subjID <- rep(c(1:8),ea=nrow(tbt_matrices))
+tbt_matrices_reform <- tbt_matrices_reform[complete.cases(tbt_matrices_reform),]
+
+tbt_matrices_reform$InitiationType[tbt_matrices_reform$InitiationType==310]<-0
+tbt_matrices_reform$InitiationType[tbt_matrices_reform$InitiationType==210]<-1
+tbt_matrices_reform$Choice[tbt_matrices_reform$Choice==140]<-0
+tbt_matrices_reform$Choice[tbt_matrices_reform$Choice==150]<-1
+
+
+###restrict sessions
+#note still need to modify some given box issues
+avail_sessions <- c(40:43,45:48,93:96,98:101,127:130,135,133:138)
+tbt_matrices_reform <- tbt_matrices_reform[tbt_matrices_reform$Session %in% 
+                                             avail_sessions,]
+
+###interval condition defined by Long FI
+tbt_matrices_reform$IntervalCond <- "A12"
+tbt_matrices_reform$IntervalCond[tbt_matrices_reform$Session %in% 
+                                   c(93:101)] <- "A18"
+tbt_matrices_reform$IntervalCond[tbt_matrices_reform$Session %in% 
+                                   c(127:138)] <- "B12"
+
+
+#set min interval to zero
+tbt_matrices_reform$ogInterval <- tbt_matrices_reform$Interval
+
+tbt_matrices_reform$Interval[tbt_matrices_reform$IntervalCond == "A12"] <- 
+  tbt_matrices_reform$Interval[tbt_matrices_reform$IntervalCond == "A12"] - 
+  min(tbt_matrices_reform$Interval[tbt_matrices_reform$IntervalCond == "A12"])
+
+tbt_matrices_reform$Interval[tbt_matrices_reform$IntervalCond == "A18"] <- 
+  tbt_matrices_reform$Interval[tbt_matrices_reform$IntervalCond == "A18"] - 
+  min(tbt_matrices_reform$Interval[tbt_matrices_reform$IntervalCond == "A18"])
+
+tbt_matrices_reform$Interval[tbt_matrices_reform$IntervalCond == "B12"] <- 
+  tbt_matrices_reform$Interval[tbt_matrices_reform$IntervalCond == "B12"] - 
+  min(tbt_matrices_reform$Interval[tbt_matrices_reform$IntervalCond == "B12"])
+
+
+### add session information (baseline, PF)
+baseline_sess <- c(40,41,45,46,93,94,98,99,127,128,133,134)
+pf24hr <- c(43,48,96,101,130,136)
+pf1hr <- pf24hr-1
+
+
+tbt_matrices_reform$Condition <- "Extinction"
+tbt_matrices_reform$Condition[tbt_matrices_reform$Session %in% 
+                                baseline_sess] <- "Baseline"
+tbt_matrices_reform$Condition[tbt_matrices_reform$Session %in% 
+                                pf24hr] <- "Pre-feeding 24hr"
+tbt_matrices_reform$Condition[tbt_matrices_reform$Session %in% 
+                                pf1hr] <- "Pre-feeding 1hr"
+
+
+#data with technical errors/box malfunctions to be substiuted with reruns for dropped
+
+#subj 4 gets dropped here because only completed 13 trials due to lever problem, 
+#missing 24 hr pre-feeding from B12 condition
+# tbt_matrices_reform$Condition[which(tbt_matrices_reform$subjID==4 & 
+#                                           tbt_matrices_reform$Session==96)]<-"DROP"
+
+#onset of test for subjects 1 and 2 delayed due to lever problems
+#only one baseline session prior to manipulation due to box issues
+tbt_matrices_reform$Condition[which(
+  tbt_matrices_reform$subjID %in% c(1,2) &
+    tbt_matrices_reform$Session==136)] <- c("Baseline")
+tbt_matrices_reform$Condition[which(
+  tbt_matrices_reform$subjID %in% c(1,2) &
+    tbt_matrices_reform$Session==137)] <- c("Pre-feeding 1hr")
+tbt_matrices_reform$Condition[which(
+  tbt_matrices_reform$subjID %in% c(1,2) &
+    tbt_matrices_reform$Session==138)] <- c("Pre-feeding 24hr")
+
+
+tbt_matrices_reform$Condition[which(
+  tbt_matrices_reform$subjID %in% c(1,2) &
+    tbt_matrices_reform$Session >= 133 & 
+    tbt_matrices_reform$Session <= 135)] <-  "DROP"
+
+#this is to ignore levels of pre-feeding
+tbt_matrices_reform$AltCondition <- 0
+tbt_matrices_reform$AltCondition[grepl("Pre-feeding",
+                                       tbt_matrices_reform$Condition)] <- 1
+
+#check conditions for each animal
+
+subj_conditions <- unique(tbt_matrices_reform[,c("subjID","InitiationType","IntervalCond","Condition", "Session")])
+subj_conditions <- pivot_wider(subj_conditions, names_from = Condition ,values_from=IntervalCond)
+
+subj_conditions
+
+#drops extinction condition
+tbt_matrices_reform <- tbt_matrices_reform[tbt_matrices_reform$Condition!="DROP",]
+
+tbt_matrices_reform <- tbt_matrices_reform[which(tbt_matrices_reform$Condition!="Extinction" & 
+                                                   tbt_matrices_reform$Session < 140),]
+
+
+```
+
+# 1. First Analysis: Logistic Regression
+
+After formatting our data, we can now begin the analysis. Here we start 
+with a simple glmer model using logistic regression. If this model fits well we 
+can calculate the PSE and difference limen from the model and use them
+as proxies for the median and IQR calculated empirically from the switch-timing
+task. 
+
+```{r}
+#glm logistic model 
+
+logistic_test <- glmer(Choice ~
+                         IntervalCond*Interval*AltCondition*InitiationType + 
+                         (1+Interval|subjID), 
+                       data =tbt_matrices_reform, 
+                       family=binomial(link="logit"), 
+                       nAGQ = 0,
+                       control=glmerControl(optimizer="bobyqa", 
+                                            optCtrl=list(maxfun=2e5)))
+tbt_matrices_reform$predicted_response <- predict(logistic_test, 
+                                                  type="response")
+
+summary_outcome <- summary(logistic_test)
+
+avg_pfs <- tbt_matrices_reform %>%
+  group_by(AltCondition,IntervalCond,Interval,InitiationType) %>% 
+  summarise(across(.cols=c(Choice,predicted_response),.fns=c(mean,sd)))
+
+subj_avg_pfs <- tbt_matrices_reform %>%
+  group_by(subjID,AltCondition,IntervalCond,Interval,InitiationType) %>% 
+  summarise(across(.cols=c(Choice,predicted_response),.fns=c(mean,sd)))
+
+```
+
+
+```{r, fig.width = 12, fig.height = 4}
+ggplot()+
+  geom_point(data=avg_pfs, 
+             aes(x=Interval,y=Choice_1,color=as.factor(InitiationType), 
+                 shape = as.factor(AltCondition)),
+             size = 2) + 
+  geom_line(data=avg_pfs,
+             aes(x=Interval,y=Choice_1,
+                 color=as.factor(InitiationType),
+                 linetype = as.factor(AltCondition)),
+            size = 1)+ 
+  xlab("Zeroed-Interval") + 
+  ylab("P(Choice Long)")+
+  facet_wrap(~IntervalCond)
+
+
+ggplot()+
+  geom_point(data=avg_pfs, 
+             aes(x=Interval,y=Choice_1,color=as.factor(InitiationType), 
+                 shape = as.factor(AltCondition)),
+             size = 2) + 
+  geom_line(data=avg_pfs,
+             aes(x=Interval,y=predicted_response_1,
+                 color=as.factor(InitiationType),
+                 linetype = as.factor(AltCondition)),
+            size = 1) + 
+  xlab("Zeroed-Interval") + 
+  ylab("P(Choice Long)")+
+  facet_wrap(~IntervalCond)
+
+
+```
+
+The fits of the model are decent, but its fairly clear the model has an issue
+accounting for the steepness of the rise across intervals. We can fix this
+by implementing a different model. Before doing so, let's see what this model
+suggests about the data
+
+```{r}
+summary_outcome
+
+```
+
+Given how the model was formulated, the intercept is the log odds of responding
+"Long" at the shortest interval under Baseline conditions in A12 in EI. 
+
+We want to know (1) does NP improve the log odds to respond long as intervals 
+increase and (2) whether NP protects the log odds to respond long when we switch
+from Baseline conditions to Pre-feeding conditions. 
+
+**Do increasing intervals increase the log odds to respond long?** 
+
+Yes. The effect of Interval is to increase the log odds by 0.74 (Z = 116.12, 
+p < 0.001). Note that A18 but not B12 slightly enhances this estimate, 
+but that is expected given that A18 is characterized by a short interval of 6 s
+and a long interval of 18 s (A18: Z = 2.237, p = 0.03; B12: Z= - 1.03, p = 0.30).
+
+
+**Does NP enhance this effect relative to EI?**
+Yes. We see that NP enhances the effect of interval relative to EI in A12, which
+does not appear to significantly differ in A18 or B12 (A12: Z = 4.55, p < .001; 
+A18: Z = -0.33 p = 0.74; B12: Z=1.96, p = 0.05). 
+
+**Does Pre-feeding Affect log odds to respond long?**
+Yes, and it appears to reduce the probability of responding long 
+(Z = -12.44. p < 0.001). 
+
+**Does NP protect performance from pre-feeding affect**
+This interaction does not appear to be affected by Initiation Type 
+(Z = -1.16, p =0.24). 
+
+Thus based on this initial analysis we find support for NP enhancing the log odds
+of responding long with increasing intervals but it does not protect performance
+from the effects of pre-feeding. 
+
+Note we looked at effects/coefficients directly related to our hypotheses. We
+did not look at all effects/coefficients because such effects imply interactions
+not hypothesized and with an unclear ability to replicate if we were to repeat
+this study. 
+
+Nonetheless, we do want to note that these effects imply interactions with both 
+the range of intervals and whether conditions were repeated (practice/repeated 
+exposure effects). 
+
+# 2. Cumulative Weibull Exercise
+
+We noted in the first analysis that the glmer logistic model did not track the
+data as well as we would like. Thus it is possible that some of the prior
+conclusions are suspect. To see if a different approach would yield the same 
+conclusions we sought to fit a shifted and scaled cumulative weibull distribution
+from which we can directly calculate the median and IQR (the most direct proxies
+from the empirical approach of the switch timing studies). 
+
+Note one could choose any cumulative distribution from the exponential family. 
+Here we chose the weibull because its CDF is relatively straight forward and
+flexible enough to capture a wide range of shapes. 
+
+We will first attempt to do this using STAN
+
+```{r}
+cumulative_weibull <- "
+
+// stan code for cumulative weibull model
+
+data {
+
+ int<lower=0> Nr; //rows
+ int<lower=1> Np; //predictors
+ int<lower=1> Ns; // subjects
+ vector[Nr] x; //intervals
+ int c[Nr]; //choices
+ int s[Nr]; //subjects
+ matrix[Nr,Np] P; //matrix of predictors
+
+}
+
+parameters {
+
+//lambda of weibull
+
+real alpha_lambda;
+vector[Np] betas_lambda; 
+vector[Ns] lambda_rme; 
+
+//k of weibull
+
+real alpha_k; 
+vector[Np] betas_k; 
+vector[Ns] k_rme; 
+
+//mixture coef
+real alpha_H;
+vector[Np] betas_H;
+vector[Np] H_rme;
+
+//non-timing rate
+real alpha_rate;
+vector[Np] betas_rate;
+vector[Np] rate_rme; 
+
+
+
+}
+
+transformed parameters {
+
+//vectors for weibull function
+
+vector<lower=0,upper=1>[Nr] wblF;
+vector<lower=0,upper=1>[Nr] expF;
+vector<lower=0,upper=1>[Nr] Bp_t;
+vector[Nr] lambda;
+vector[Nr] k;
+vector[Nr] H; 
+vector[Nr] rate;
+
+
+//fixed effects
+
+lambda = alpha_lambda + (P * betas_lambda);  
+k = alpha_k + (P * betas_k);  
+H = alpha_H + (P * betas_H);
+rate = alpha_rate + (P * betas_rate);
+
+
+
+
+for (i in 1:Nr)
+{
+//random effects
+  lambda[i] = lambda[i] + lambda_rme[s[i]]; 
+  k[i] = k[i] + k_rme[s[i]]; 
+  H[i] = H[i] + H_rme[s[i]];
+  rate[i] = rate[i] + rate_rme[s[i]];
+
+}
+
+//weibull function
+
+H = exp(H)./(1+exp(H));
+
+wblF = H.*(1-exp(-(pow(exp(log(x)-lambda),exp(k)))));
+expF = (1-H).*(1-exp(-(exp(rate+log(x)))));
+Bp_t = wblF;
+
+}
+
+model {
+
+//priors
+
+target+= normal_lpdf(alpha_lambda|log(7),1);
+target+= normal_lpdf(alpha_k|log(2),1);
+target+= normal_lpdf(alpha_H|log(10),1);
+target+= normal_lpdf(alpha_rate|log(0.1),1);
+
+
+target+= normal_lpdf(betas_lambda|0,1);
+target+= normal_lpdf(betas_k|0,1);
+target+= normal_lpdf(betas_H|0,1);
+target+= normal_lpdf(betas_rate|0,1);
+
+
+target+= normal_lpdf(lambda_rme|0,1);
+target+= normal_lpdf(k_rme|0,1);
+target+= normal_lpdf(H_rme|0,1);
+target+= normal_lpdf(rate_rme|0,1);
+
+
+//likelihood
+
+target+= binomial_lpmf(c|1, Bp_t); //binomial likelihood
+
+}
+
+"
+
+#construct predictor matrix
+pred_matrix <- model.matrix(Choice~-1+InitiationType*AltCondition*IntervalCond, 
+                            data=tbt_matrices_reform)
+
+data_list <- list(Nr = nrow(tbt_matrices_reform),
+                  Np = ncol(pred_matrix),
+                  Ns = length(unique(tbt_matrices_reform$subjID)),
+                  x=tbt_matrices_reform$ogInterval, 
+                  c=tbt_matrices_reform$Choice, 
+                  s=tbt_matrices_reform$subjID,
+                  P = pred_matrix)
+
+fit_test <- stan(model_code=cumulative_weibull, 
+                 data= data_list, 
+                 chains = 1)
+save(fit_test,file=paste0(data.path,"fit_test.RData"))
+fit_test
+```
+
+
