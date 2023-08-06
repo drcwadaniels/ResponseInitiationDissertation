@@ -10,9 +10,9 @@ rm(list=ls())
 #import libraries
 library(tidyverse)
 library(lme4)
-library(rstan)
-options(mc.cores = parallel::detectCores())
-rstan_options(auto_write = TRUE)
+library(shinystan)
+library(cmdstanr)
+
 ```
 
 ```{r}
@@ -367,7 +367,7 @@ H = exp(H)./(1+exp(H));
 
 wblF = H.*(1-exp(-(pow(exp(log(x)-lambda),exp(k)))));
 expF = (1-H).*(1-exp(-(exp(rate+log(x)))));
-Bp_t = wblF;
+Bp_t = wblF+expF;
 
 }
 
@@ -401,6 +401,11 @@ target+= binomial_lpmf(c|1, Bp_t); //binomial likelihood
 
 "
 
+write_stan_file(cumulative_weibull,
+                dir=data.path,
+                basename="tb_cumulativeweibull",
+                force_overwrite = TRUE)
+
 #construct predictor matrix
 pred_matrix <- model.matrix(Choice~-1+InitiationType*AltCondition*IntervalCond, 
                             data=tbt_matrices_reform)
@@ -413,11 +418,33 @@ data_list <- list(Nr = nrow(tbt_matrices_reform),
                   s=tbt_matrices_reform$subjID,
                   P = pred_matrix)
 
-fit_test <- stan(model_code=cumulative_weibull, 
-                 data= data_list, 
-                 chains = 1)
-save(fit_test,file=paste0(data.path,"fit_test.RData"))
-fit_test
+# temporal_bisection <- stan(model_code=cumulative_weibull,
+#                  data= data_list,
+#                  chains = 4, 
+#                  iter = 24000)
+
+
+#compile model
+mod <- cmdstan_model(stan_file=file.path(paste0(data.path,
+                                                "tb_cumulativeweibull.stan")))
+```
+
+```{r}
+fit <- mod$sample(data=data_list, 
+                  seed=123,
+                  chains= 1, 
+                  refresh=1)
+
+#save(temporal_bisection,file=paste0(data.path,"temporal_bisection_posteriors.RData"))
+#temporal_bisection
+
+```
+
+```{r}
+#load STAN model
+#load(paste0(data.path,"fit_test.RData"))
+
+
 ```
 
 
