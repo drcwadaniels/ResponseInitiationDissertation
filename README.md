@@ -1,5 +1,5 @@
 # ResponseInitiationDissertation
-A reanalysis of my dissertation for publication
+A reanalysis of [my dissertation](https://psyarxiv.com/9j3k2/) for publication
 
 # Current Files
 1. RIswitchtiming.Rmd contains analysis for both switch-timing and bisection; this deprecates RIbisection.Rmd and .html
